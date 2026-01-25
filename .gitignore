@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Data
+data/
+*.json
+!data/notebooks.json
+!data/chunks.json
+
+# Pyppeteer
+.local-chromium/
+
+# Mac
+.DS_Store
+
+# IDE
+.vscode/
+.idea/

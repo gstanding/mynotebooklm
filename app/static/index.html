@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>mynotebooklm</title>
+    <style>
+      body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; margin: 0; display: flex; height: 100vh; }
+      .sidebar { width: 250px; background: #f7f7f7; border-right: 1px solid #ddd; padding: 16px; display: flex; flex-direction: column; }
+      .main { flex: 1; padding: 24px; overflow-y: auto; display: none; } /* 默认隐藏主区域，选中 Notebook 后显示 */
+      .empty-state { flex: 1; display: flex; align-items: center; justify-content: center; color: #888; }
+      
+      .card { border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+      label { display: block; margin-bottom: 8px; }
+      input, textarea, button { font-size: 14px; }
+      .citations { font-size: 12px; color: #555; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size: 12px; }
+      
+      /* Notebook List */
+      .notebook-list { list-style: none; padding: 0; margin: 0; flex: 1; overflow-y: auto; }
+      .notebook-item { padding: 8px 12px; cursor: pointer; border-radius: 4px; margin-bottom: 4px; display: flex; justify-content: space-between; align-items: center; }
+      .notebook-item:hover { background: #e0e0e0; }
+      .notebook-item.active { background: #007bff; color: white; }
+      .notebook-item .delete-btn { font-size: 12px; color: #ff4d4f; cursor: pointer; display: none; background: none; border: none; padding: 0; }
+      .notebook-item:hover .delete-btn { display: block; }
+      
+      .create-box { margin-top: 16px; border-top: 1px solid #ddd; padding-top: 16px; }
+      .create-box input { width: 100%; box-sizing: border-box; margin-bottom: 8px; padding: 6px; }
+      .source-list { list-style: none; padding: 0; margin-top: 8px; }
+      .source-item { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #eee; }
+      .source-item:last-child { border-bottom: none; }
+      .source-name { font-size: 13px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 8px; }
+      .source-actions { display: flex; gap: 8px; align-items: center; }
+      .toggle-switch { cursor: pointer; font-size: 12px; color: #007bff; user-select: none; }
+      .toggle-switch.disabled { color: #888; text-decoration: line-through; }
+    </style>
+  </head>
+  <body>
+    <!-- 侧边栏：Notebook 列表 -->
+    <div class="sidebar">
+      <h3>我的知识库</h3>
+      <ul id="notebookList" class="notebook-list"></ul>
+      
+      <div class="create-box">
+        <input id="newNotebookTitle" type="text" placeholder="新知识库名称" />
+        <button id="createNotebookBtn">创建</button>
+      </div>
+    </div>
+
+    <!-- 空状态 -->
+    <div id="emptyState" class="empty-state">
+      请从左侧选择或创建一个知识库
+    </div>
+
+    <!-- 主区域：详情与操作 -->
+    <div id="mainArea" class="main">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+        <h2 id="currentNotebookTitle" style="margin:0;"></h2>
+        <div class="mono" id="status"></div>
+      </div>
+
+      <div class="card">
+        <h3>摄取资料</h3>
+        <label>文件路径（每行一个）：</label>
+        <textarea id="paths" rows="3" style="width:100%" placeholder="/absolute/path/to/file.pdf"></textarea>
+        <label>网页 URL（每行一个）：</label>
+        <textarea id="urls" rows="2" style="width:100%" placeholder="https://example.com/article"></textarea>
+        <div style="margin-top:8px;">
+          <button id="ingest">开始摄取</button>
+          <span id="ingest_result" class="mono"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>已摄取资料</h3>
+        <ul id="sourceList" class="source-list"></ul>
+      </div>
+
+      <div class="card">
+        <h3>查询</h3>
+        <div style="display:flex; gap:8px;">
+          <input id="q" type="text" style="flex:1; padding:8px;" placeholder="请输入问题（答案仅基于当前知识库）" />
+          <button id="ask" style="padding:0 24px;">查询</button>
+        </div>
+        <pre id="answer" style="white-space: pre-wrap; margin-top:16px; background:#f9f9f9; padding:12px; border-radius:4px;"></pre>
+        <div id="citations" class="citations"></div>
+      </div>
+    </div>
+
+    <script>
+      let currentNotebookId = null;
+
+      // --- Notebook Management ---
+      
+      async function loadNotebooks() {
+        const res = await fetch('/notebooks');
+        const list = await res.json();
+        const ul = document.getElementById('notebookList');
+        ul.innerHTML = '';
+        list.forEach(nb => {
+          const li = document.createElement('li');
+          li.className = `notebook-item ${nb.id === currentNotebookId ? 'active' : ''}`;
+          li.innerHTML = `
+            <span onclick="selectNotebook('${nb.id}', '${nb.title}')">${nb.title}</span>
+            <button class="delete-btn" onclick="deleteNotebook('${nb.id}')">×</button>
+          `;
+          ul.appendChild(li);
+        });
+      }
+
+      async function createNotebook() {
+        const title = document.getElementById('newNotebookTitle').value.trim();
+        if (!title) return;
+        await fetch('/notebooks', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title })
+        });
+        document.getElementById('newNotebookTitle').value = '';
+        loadNotebooks();
+      }
+
+      async function deleteNotebook(id) {
+        if (!confirm('确定要删除这个知识库吗？所有资料将丢失。')) return;
+        await fetch(`/notebooks/${id}`, { method: 'DELETE' });
+        if (currentNotebookId === id) {
+          currentNotebookId = null;
+          document.getElementById('mainArea').style.display = 'none';
+          document.getElementById('emptyState').style.display = 'flex';
+        }
+        loadNotebooks();
+      }
+
+      window.selectNotebook = (id, title) => {
+        currentNotebookId = id;
+        document.getElementById('currentNotebookTitle').textContent = title;
+        document.getElementById('mainArea').style.display = 'block';
+        document.getElementById('emptyState').style.display = 'none';
+        
+        // 更新侧边栏高亮
+        loadNotebooks();
+        // 刷新该 Notebook 的状态
+        refreshStatus();
+        refreshSources();
+        // 清空之前的查询结果
+        document.getElementById('answer').textContent = '';
+        document.getElementById('citations').innerHTML = '';
+        document.getElementById('ingest_result').textContent = '';
+      };
+
+      document.getElementById('createNotebookBtn').onclick = createNotebook;
+      
+      // --- Source Management ---
+      
+      async function refreshSources() {
+        if (!currentNotebookId) return;
+        const res = await fetch(`/notebooks/${currentNotebookId}/sources`);
+        const list = await res.json();
+        const ul = document.getElementById('sourceList');
+        ul.innerHTML = '';
+        
+        if (list.length === 0) {
+            ul.innerHTML = '<li style="color:#888; font-size:13px;">暂无资料</li>';
+            return;
+        }
+        
+        list.forEach(src => {
+            const li = document.createElement('li');
+            li.className = 'source-item';
+            const isEnabled = src.enabled !== false;
+            li.innerHTML = `
+                <span class="source-name ${isEnabled ? '' : 'disabled'}" title="${src.source_id}">
+                    [${src.source_type}] ${src.source_id} (${src.chunk_count} chunks)
+                </span>
+                <div class="source-actions">
+                    <span class="toggle-switch ${isEnabled ? '' : 'disabled'}" onclick="toggleSource('${src.source_id}', ${!isEnabled})">
+                        ${isEnabled ? '已启用' : '已禁用'}
+                    </span>
+                    <button style="font-size:12px; padding:2px 6px;" onclick="deleteSource('${src.source_id}')">删除</button>
+                </div>
+            `;
+            ul.appendChild(li);
+        });
+      }
+      
+      window.toggleSource = async (sourceId, enabled) => {
+        await fetch(`/notebooks/${currentNotebookId}/sources/${encodeURIComponent(sourceId)}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled })
+        });
+        refreshSources();
+      };
+      
+      window.deleteSource = async (sourceId) => {
+        if (!confirm(`确定要删除资料 "${sourceId}" 吗？`)) return;
+        await fetch(`/notebooks/${currentNotebookId}/sources/${encodeURIComponent(sourceId)}`, {
+            method: 'DELETE'
+        });
+        refreshSources();
+        refreshStatus();
+      };
+
+      // --- Ingest & Query ---
+
+      async function refreshStatus() {
+        if (!currentNotebookId) return;
+        const res = await fetch(`/status?notebook_id=${currentNotebookId}`);
+        const data = await res.json();
+        document.getElementById('status').textContent = `${data.chunks} chunks | ${data.data_dir}`;
+      }
+
+      document.getElementById('ingest').onclick = async () => {
+        if (!currentNotebookId) return alert("请先选择一个知识库");
+        const paths = document.getElementById('paths').value.split('\n').map(s => s.trim()).filter(Boolean);
+        const urls = document.getElementById('urls').value.split('\n').map(s => s.trim()).filter(Boolean);
+        
+        document.getElementById('ingest').disabled = true;
+        document.getElementById('ingest_result').textContent = "Ingesting...";
+        
+        try {
+          const res = await fetch('/ingest', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ file_paths: paths, urls, notebook_id: currentNotebookId })
+          });
+          const data = await res.json();
+          document.getElementById('ingest_result').textContent = JSON.stringify(data);
+          refreshStatus();
+          refreshSources(); // 摄取完成后刷新列表
+        } finally {
+          document.getElementById('ingest').disabled = false;
+        }
+      };
+
+      document.getElementById('ask').onclick = async () => {
+        if (!currentNotebookId) return alert("请先选择一个知识库");
+        const q = document.getElementById('q').value;
+        if (!q) return;
+        
+        document.getElementById('ask').disabled = true;
+        document.getElementById('answer').textContent = "Thinking...";
+        
+        try {
+          const res = await fetch('/query', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ q, top_k: 6, notebook_id: currentNotebookId })
+          });
+          const data = await res.json();
+          document.getElementById('answer').textContent = data.answer;
+          const cite = data.citations || [];
+          document.getElementById('citations').innerHTML = '<ol>' + cite.map(c => {
+            const loc = c.location ? (' (' + c.location + ')') : '';
+            const src = c.url ? `<a href="${c.url}" target="_blank">${c.source_id || '链接'}</a>` : (c.path || c.source_id || '');
+            return `<li>${src}${loc} | score=${c.score}</li>`;
+          }).join('') + '</ol>';
+        } finally {
+          document.getElementById('ask').disabled = false;
+        }
+      };
+
+      // Init
+      loadNotebooks();
+    </script>
+  </body>
+</html>
