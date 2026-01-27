@@ -34,6 +34,33 @@
       .toggle-switch { cursor: pointer; font-size: 12px; color: #007bff; user-select: none; }
       .toggle-switch.disabled { color: #888; text-decoration: line-through; }
     </style>
+    <!-- MathJax Configuration -->
+    <script>
+      window.MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre'],
+          ignoreHtmlClass: 'tex2jax_ignore',
+          processHtmlClass: 'tex2jax_process'
+        },
+        svg: {
+          fontCache: 'global'
+        },
+        startup: {
+          ready: () => {
+            console.log('MathJax is ready');
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
   </head>
   <body>
     <!-- 侧边栏：Notebook 列表 -->
@@ -82,7 +109,7 @@
           <input id="q" type="text" style="flex:1; padding:8px;" placeholder="请输入问题（答案仅基于当前知识库）" />
           <button id="ask" style="padding:0 24px;">查询</button>
         </div>
-        <pre id="answer" style="white-space: pre-wrap; margin-top:16px; background:#f9f9f9; padding:12px; border-radius:4px;"></pre>
+        <div id="answer" style="white-space: pre-wrap; margin-top:16px; background:#f9f9f9; padding:12px; border-radius:4px; min-height: 40px;"></div>
         <div id="citations" class="citations"></div>
       </div>
     </div>
@@ -249,6 +276,10 @@
           });
           const data = await res.json();
           document.getElementById('answer').textContent = data.answer;
+          // 触发 MathJax 渲染
+          if (window.MathJax) {
+            window.MathJax.typesetPromise([document.getElementById('answer')]).catch((err) => console.log(err));
+          }
           const cite = data.citations || [];
           document.getElementById('citations').innerHTML = '<ol>' + cite.map(c => {
             const loc = c.location ? (' (' + c.location + ')') : '';

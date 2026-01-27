@@ -9,6 +9,7 @@ env/
 # Data
 data/
 *.json
+docs/
 !data/notebooks.json
 !data/chunks.json
 

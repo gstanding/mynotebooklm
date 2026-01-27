@@ -4,8 +4,9 @@ from typing import Dict, List, Optional
 import requests
 from bs4 import BeautifulSoup
 from readability import Document
-from PyPDF2 import PdfFileReader
+import fitz  # PyMuPDF
 from .utils import clean_text, chunk_text
+from .ocr import ocr_image
 import asyncio
 from pyppeteer import launch
 
@@ -39,19 +40,63 @@ def ingest_pdf(file_path: str, source_id: Optional[str] = None) -> List[Dict]:
     chunks: List[Dict] = []
     
     try:
-        # PyPDF2 1.x 的 PdfFileReader 需要保持文件打开状态，直到读取完成
-        with open(file_path, "rb") as f:
-            reader = PdfFileReader(f)
-            num_pages = reader.getNumPages()
-            for i in range(num_pages):
-                try:
-                    page = reader.getPage(i)
-                    text = page.extractText() or ""
-                    if text.strip():
-                        _add_chunks(chunks, source_id, "pdf", text, location=f"page {i+1}", path=file_path)
-                except Exception as e:
-                    print(f"Error reading page {i} of {file_path}: {e}")
-                    continue
+        doc = fitz.open(file_path)
+        print(f"DEBUG: Processing PDF {file_path} with {len(doc)} pages")
+        
+        for i, page in enumerate(doc):
+            try:
+                # 1. 尝试直接提取文本
+                text = page.get_text() or ""
+                
+                # 2. OCR 增强逻辑：如果页面包含图片，尝试对图片进行 OCR
+                # PyMuPDF 的 get_images() 返回页面内的图片列表
+                images = page.get_images(full=True)
+                if images:
+                    print(f"DEBUG: Page {i+1} has {len(images)} images, attempting OCR...")
+                    ocr_texts = []
+                    for img_index, img in enumerate(images):
+                        try:
+                            xref = img[0]
+                            base_image = doc.extract_image(xref)
+                            image_bytes = base_image["image"]
+                            
+                            # 简单的去重逻辑：如果这一页已经提取了很多文本（>500字），
+                            # 且图片较小（可能是图标），则跳过 OCR 以节省时间
+                            # 这里暂不实现复杂的重叠检测，而是简单地将 OCR 结果追加到文本末尾
+                            ocr_res = ocr_image(image_bytes)
+                            if ocr_res:
+                                ocr_texts.append(ocr_res)
+                        except Exception as e:
+                            print(f"WARNING: Failed to extract/OCR image {img_index} on page {i+1}: {e}")
+                    
+                    if ocr_texts:
+                        combined_ocr = "\n".join(ocr_texts)
+                        print(f"DEBUG: OCR extracted {len(combined_ocr)} chars from images on page {i+1}")
+                        # 将 OCR 结果追加到页面文本末尾
+                        text += "\n" + combined_ocr
+                
+                # 3. 如果整页依然没文本（既没文字层也没提取出 OCR），尝试整页渲染 OCR
+                # 这是最后的保底，防止漏掉那些“绘制”出来的文字（非 Image 对象）
+                if len(text.strip()) < 50:
+                    print(f"DEBUG: Page {i+1} still has little text ({len(text.strip())} chars), attempting full-page OCR...")
+                    try:
+                        # 渲染页面为图片 (dpi=300 提升清晰度)
+                        pix = page.get_pixmap(dpi=300)
+                        img_bytes = pix.tobytes("png")
+                        ocr_text = ocr_image(img_bytes)
+                        if ocr_text:
+                            print(f"DEBUG: Full-page OCR extracted {len(ocr_text)} chars from page {i+1}")
+                            text += "\n" + ocr_text
+                    except Exception as e:
+                        print(f"ERROR: Full-page OCR failed for page {i+1}: {e}")
+
+                if text.strip():
+                    _add_chunks(chunks, source_id, "pdf", text, location=f"page {i+1}", path=file_path)
+            except Exception as e:
+                print(f"Error reading page {i} of {file_path}: {e}")
+                continue
+                
+        doc.close()
     except Exception as e:
         print(f"Error opening PDF {file_path}: {e}")
         
