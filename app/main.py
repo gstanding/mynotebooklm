@@ -10,6 +10,10 @@ from .hybrid import HybridIndex
 from .rag import answer_query
 from .notebooks import NotebookManager
 from .sources import SourceManager
+from .db import init_db
+
+# Initialize Database
+init_db()
 
 app = FastAPI(title="mynotebooklm", version="0.1.0")
 

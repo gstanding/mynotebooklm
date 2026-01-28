@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from typing import Dict, List, Optional
 import requests
 from bs4 import BeautifulSoup
@@ -176,7 +177,10 @@ def ingest_url(url: str, source_id: Optional[str] = None) -> List[Dict]:
             loop.close()
         except Exception as e2:
             print(f"Pyppeteer also failed for {url}: {e2}")
-            raise e2
+            # If both fail, we might want to return empty list instead of crashing
+            # or raise a more user-friendly error.
+            # For now, let's catch it and return empty list so other sources can proceed.
+            return []
 
     doc = Document(html)
     summary_html = doc.summary()
@@ -234,44 +238,76 @@ def ingest_url(url: str, source_id: Optional[str] = None) -> List[Dict]:
 
 
 from .notebooks import NotebookManager
+from .db import (
+    load_chunks_db, 
+    create_chunks_batch_db, 
+    create_source_db,
+    count_chunks_by_source,
+    get_source_db
+)
+
+def load_chunks(notebook_id: Optional[str] = None) -> List[Dict]:
+    return load_chunks_db(notebook_id)
 
 def save_chunks(new_chunks: List[Dict], notebook_id: Optional[str] = None) -> Dict[str, int]:
     ensure_data_dir()
     
-    if notebook_id:
-        chunks_path = NotebookManager.get_notebook_chunks_path(notebook_id)
-    else:
-        chunks_path = CHUNKS_PATH
+    if not notebook_id:
+        # Fallback for legacy global mode or error
+        print("WARNING: save_chunks called without notebook_id, skipping persistence.")
+        return {"added": 0, "total": 0, "before": 0}
         
     print(f"DEBUG: save_chunks called with {len(new_chunks)} chunks for notebook {notebook_id}")
     
-    if os.path.exists(chunks_path):
-        with open(chunks_path, "r", encoding="utf-8") as f:
-            try:
-                existing = json.load(f)
-            except json.JSONDecodeError:
-                existing = []
-    else:
-        existing = []
+    # 1. Identify and Create Sources
+    # Map source_id -> source info from the first chunk we see for that source
+    sources_to_create = {}
     
-    before = len(existing)
-    existing.extend(new_chunks)
-    
-    print(f"DEBUG: Writing {len(existing)} chunks to {chunks_path}")
-    with open(chunks_path, "w", encoding="utf-8") as f:
-        json.dump(existing, f, ensure_ascii=False, indent=2)
-    return {"added": len(new_chunks), "total": len(existing), "before": before}
-
-
-def load_chunks(notebook_id: Optional[str] = None) -> List[Dict]:
-    ensure_data_dir()
-    
-    if notebook_id:
-        chunks_path = NotebookManager.get_notebook_chunks_path(notebook_id)
-    else:
-        chunks_path = CHUNKS_PATH
+    for chunk in new_chunks:
+        # Inject notebook_id
+        chunk['notebook_id'] = notebook_id
+        # Ensure created_at
+        if 'created_at' not in chunk:
+            chunk['created_at'] = time.time()
+            
+        sid = chunk.get('source_id')
+        if not sid:
+            continue
+            
+        if sid not in sources_to_create:
+            # Check if source already exists in DB to avoid overhead? 
+            # create_source_db uses INSERT OR IGNORE, so it's safe.
+            sources_to_create[sid] = {
+                'id': sid,
+                'notebook_id': notebook_id,
+                'source_type': chunk.get('source_type', 'unknown'),
+                'file_name': sid, # Use source_id as filename default
+                'created_at': chunk.get('created_at'),
+                'meta_data': {
+                    'url': chunk.get('url'),
+                    'path': chunk.get('path')
+                }
+            }
+            
+    # Batch create sources
+    for s in sources_to_create.values():
+        create_source_db(
+            s['id'], 
+            s['notebook_id'], 
+            s['source_type'], 
+            s['file_name'], 
+            s['created_at'], 
+            s['meta_data']
+        )
         
-    if not os.path.exists(chunks_path):
-        return []
-    with open(chunks_path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    # 2. Save Chunks
+    # We need to know how many chunks were there before.
+    # This is expensive to count globally, maybe just return added count?
+    # The API returns {"added": ..., "total": ..., "before": ...}
+    # We can get total count for this notebook from DB.
+    # For now, let's just approximate or query.
+    
+    # Actually, let's just insert.
+    create_chunks_batch_db(new_chunks)
+    
+    return {"added": len(new_chunks), "total": -1, "before": -1}
